@@ -1,14 +1,18 @@
-from __future__ import absolute_import
+from __future__ import absolute_import, division
 
 import logging
 import time
 import functools
-import urllib
 import random
-import urlparse
 import cgi
 import warnings
 import inspect
+import six
+
+try:
+    from urllib import urlencode
+except ImportError:
+    from urllib.parse import urlencode  # noqa
 
 try:
     import simplejson as json
@@ -20,8 +24,8 @@ import tornado.httpclient
 
 from .backoff_timer import BackoffTimer
 from .client import Client
-from . import protocol
-from . import async
+from nsq import async, compat, protocol
+
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +64,7 @@ class Reader(Client):
         import nsq
 
         def handler(message):
-            print message
+            print(message)
             return True
 
         r = nsq.Reader(message_handler=handler,
@@ -81,11 +85,11 @@ class Reader(Client):
             buf.append(message)
             if len(buf) >= 3:
                 for msg in buf:
-                    print msg
+                    print(msg)
                     msg.finish()
                 buf = []
             else:
-                print 'deferring processing'
+                print('deferring processing')
 
         r = nsq.Reader(message_handler=process_message,
                 lookupd_http_addresses=['http://127.0.0.1:4161'],
@@ -152,11 +156,14 @@ class Reader(Client):
             **kwargs):
         super(Reader, self).__init__(**kwargs)
 
-        assert isinstance(topic, (str, unicode)) and len(topic) > 0
-        assert isinstance(channel, (str, unicode)) and len(channel) > 0
+        assert isinstance(topic, compat.string_like) and len(topic) > 0
+        assert isinstance(channel, compat.string_like) and len(channel) > 0
         assert isinstance(max_in_flight, int) and max_in_flight > 0
         assert isinstance(max_backoff_duration, (int, float)) and max_backoff_duration > 0
-        assert isinstance(name, (str, unicode, None.__class__))
+        assert (
+            isinstance(name, compat.string_like) or
+            name is None
+        )
         assert isinstance(lookupd_poll_interval, int)
         assert isinstance(lookupd_poll_jitter, float)
         assert isinstance(lookupd_connect_timeout, int)
@@ -166,14 +173,14 @@ class Reader(Client):
 
         if nsqd_tcp_addresses:
             if not isinstance(nsqd_tcp_addresses, (list, set, tuple)):
-                assert isinstance(nsqd_tcp_addresses, (str, unicode))
+                assert isinstance(nsqd_tcp_addresses, compat.string_like)
                 nsqd_tcp_addresses = [nsqd_tcp_addresses]
         else:
             nsqd_tcp_addresses = []
 
         if lookupd_http_addresses:
             if not isinstance(lookupd_http_addresses, (list, set, tuple)):
-                assert isinstance(lookupd_http_addresses, (str, unicode))
+                assert isinstance(lookupd_http_addresses, compat.string_like)
                 lookupd_http_addresses = [lookupd_http_addresses]
             random.shuffle(lookupd_http_addresses)
         else:
@@ -276,7 +283,7 @@ class Reader(Client):
         self.message_handler = message_handler
 
     def _connection_max_in_flight(self):
-        return max(1, self.max_in_flight / max(1, len(self.conns)))
+        return max(1, self.max_in_flight // max(1, len(self.conns)))
 
     def is_starved(self):
         """
@@ -299,7 +306,7 @@ class Reader(Client):
             reader.set_message_handler(functools.partial(message_handler, reader=reader))
             nsq.run()
         """
-        for conn in self.conns.itervalues():
+        for conn in self.conns.values():
             if conn.in_flight > 0 and conn.in_flight >= (conn.last_rdy * 0.85):
                 return True
         return False
@@ -318,7 +325,7 @@ class Reader(Client):
             # if all connections aren't getting RDY
             # occsionally randomize which connection gets RDY
             self.random_rdy_ts = time.time()
-            conns_with_no_rdy = [c for c in self.conns.itervalues() if not c.rdy]
+            conns_with_no_rdy = [c for c in self.conns.values() if not c.rdy]
             if conns_with_no_rdy:
                 rdy_conn = random.choice(conns_with_no_rdy)
                 if rdy_conn is not conn:
@@ -370,7 +377,7 @@ class Reader(Client):
         if not self.conns or self.max_in_flight == 0:
             return
 
-        conn = random.choice(self.conns.values())
+        conn = random.choice(list(self.conns.values()))
         logger.info('[%s:%s] testing backoff state with RDY 1', conn.id, self.name)
         self._send_rdy(conn, 1)
 
@@ -464,7 +471,7 @@ class Reader(Client):
         :param host: the address to connect to
         :param port: the port to connect to
         """
-        assert isinstance(host, (str, unicode))
+        assert isinstance(host, compat.string_like)
         assert isinstance(port, int)
 
         conn = async.AsyncConn(host, port, **self.conn_kwargs)
@@ -564,15 +571,15 @@ class Reader(Client):
         if '://' not in endpoint:
             endpoint = 'http://' + endpoint
 
-        scheme, netloc, path, query, fragment = urlparse.urlsplit(endpoint)
+        scheme, netloc, path, query, fragment = compat.urlsplit(endpoint)
 
         if not path or path == "/":
             path = "/lookup"
 
         params = cgi.parse_qs(query)
         params['topic'] = self.topic
-        query = urllib.urlencode(_utf8_params(params), doseq=1)
-        lookupd_url = urlparse.urlunsplit((scheme, netloc, path, query, fragment))
+        query = urlencode(_utf8_params(params), doseq=1)
+        lookupd_url = compat.urlunsplit((scheme, netloc, path, query, fragment))
 
         req = tornado.httpclient.HTTPRequest(
             lookupd_url, method='GET',
@@ -588,7 +595,12 @@ class Reader(Client):
             return
 
         try:
-            lookup_data = json.loads(response.body)
+            body = response.body
+
+            if six.PY3:
+                body = body.decode('utf-8')
+
+            lookup_data = json.loads(body)
         except ValueError:
             logger.warning('[%s] lookupd %s failed to parse JSON: %r',
                            self.name, lookupd_url, response.body)
@@ -604,12 +616,12 @@ class Reader(Client):
             address = producer.get('broadcast_address', producer.get('address'))
             assert address
             self.connect_to_nsqd(address, producer['tcp_port'])
-    
+
     def set_max_in_flight(self, max_in_flight):
         """dynamically adjust the reader max_in_flight count. Set to 0 to immediately disable a Reader"""
         assert isinstance(max_in_flight, int)
         self.max_in_flight = max_in_flight
-        
+
         if max_in_flight == 0:
             # set RDY 0 to all connections
             for conn in self.conns.itervalues():
@@ -620,8 +632,7 @@ class Reader(Client):
         else:
             self.need_rdy_redistributed = True
             self._redistribute_rdy_state()
-    
-    
+
     def _redistribute_rdy_state(self):
         # We redistribute RDY counts in a few cases:
         #
@@ -655,7 +666,7 @@ class Reader(Client):
 
             # first set RDY 0 to all connections that have not received a message within
             # a configurable timeframe (low_rdy_idle_timeout).
-            for conn_id, conn in self.conns.iteritems():
+            for conn_id, conn in self.conns.items():
                 last_message_duration = time.time() - conn.last_msg_timestamp
                 logger.debug('[%s:%s] rdy: %d (last message received %.02fs)',
                              conn.id, self.name, conn.rdy, last_message_duration)
@@ -675,7 +686,7 @@ class Reader(Client):
             # We also don't attempt to avoid the connections who previously might have had RDY 1
             # because it would be overly complicated and not actually worth it (ie. given enough
             # redistribution rounds it doesn't matter).
-            possible_conns = self.conns.values()
+            possible_conns = list(self.conns.values())
             while possible_conns and max_in_flight:
                 max_in_flight -= 1
                 conn = possible_conns.pop(random.randrange(len(possible_conns)))
@@ -710,8 +721,7 @@ class Reader(Client):
         """
         logger.warning('[%s] giving up on message %s after %d tries (max:%d) %r',
                        self.name, message.id, message.attempts, self.max_tries, message.body)
-                       
-        
+
     def _on_connection_identify_response(self, conn, data, **kwargs):
         if not hasattr(self, '_disabled_notice'):
             self._disabled_notice = True
@@ -722,16 +732,15 @@ class Reader(Client):
                         return int(x)
                     except:
                         return x
-                return map(cast, v.replace('-','.').split('.'))
+                return map(cast, v.replace('-', '.').split('.'))
 
             if self.disabled.__code__ != Reader.disabled.__code__ and semver(data['version']) >= semver('0.3'):
-                logging.warning('disabled() deprecated and incompatible with nsqd >= 0.3. ' + 
-                    'It will be removed in a future release. Use set_max_in_flight(0) instead')
+                logging.warning('disabled() deprecated and incompatible with nsqd >= 0.3. ' +
+                                'It will be removed in a future release. Use set_max_in_flight(0) instead')
                 warnings.warn('disabled() is deprecated and will be removed in a future release, ' +
-                    'use set_max_in_flight(0) instead', DeprecationWarning)
+                              'use set_max_in_flight(0) instead', DeprecationWarning)
         return super(Reader, self)._on_connection_identify_response(conn, data, **kwargs)
 
-        
     @classmethod
     def disabled(cls):
         """
@@ -739,7 +748,7 @@ class Reader(Client):
 
         This is useful to subclass and override to examine a file on disk or a key in cache
         to identify if this reader should pause execution (during a deploy, etc.).
-        
+
         Note: deprecated. Use set_max_in_flight(0)
         """
         return False
@@ -758,7 +767,13 @@ def _utf8_params(params):
     for k, v in params.items():
         if v is None:
             continue
-        if isinstance(v, (int, long, float)):
+
+        types = (int, float)
+
+        if six.PY2:
+            types += (long, )
+
+        if isinstance(v, types):
             v = str(v)
         if isinstance(v, (list, tuple)):
             v = [_utf8(x) for x in v]
@@ -770,7 +785,7 @@ def _utf8_params(params):
 
 def _utf8(s):
     """encode a unicode string as utf-8"""
-    if isinstance(s, unicode):
+    if isinstance(s, six.text_type):
         return s.encode("utf-8")
     assert isinstance(s, str), "_utf8 expected a str, not %r" % type(s)
     return s
