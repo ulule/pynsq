@@ -1,5 +1,4 @@
 from __future__ import absolute_import
-
 import struct
 import re
 
@@ -11,15 +10,12 @@ except ImportError:
 from .message import Message
 from nsq import compat
 
-
 MAGIC_V2 = compat.b('  V2')
 NL = compat.b('\n')
-
 
 FRAME_TYPE_RESPONSE = 0
 FRAME_TYPE_ERROR = 1
 FRAME_TYPE_MESSAGE = 2
-
 
 # commmands
 AUTH = compat.b('AUTH')
@@ -31,7 +27,7 @@ PUB = compat.b('PUB')  # publish
 RDY = compat.b('RDY')
 REQ = compat.b('REQ')  # requeue
 SUB = compat.b('SUB')
-TOUCH = compat.b('TOUCH')
+DPUB = compat.b('DPUB')  # deferred publish
 
 
 class Error(Exception):
@@ -138,6 +134,11 @@ def mpub(topic, data):
     for m in data:
         body += struct.pack('>l', len(m)) + m
     return _command(MPUB, body, topic)
+
+
+def dpub(topic, delay_ms, data):
+    assert isinstance(delay_ms, int), 'dpub delay_ms must be an integer'
+    return _command(DPUB, data, topic, str(delay_ms))
 
 
 VALID_NAME_RE = re.compile(r'^[\.a-zA-Z0-9_-]+(#ephemeral)?$')

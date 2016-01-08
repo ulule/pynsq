@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class Writer(Client):
     """
     A high-level producer class built on top of the `Tornado IOLoop <http://tornadoweb.org>`_
-    supporting async publishing (``PUB`` & ``MPUB``) of messages to ``nsqd`` over the TCP protocol.
+    supporting async publishing (``PUB`` & ``MPUB`` & ``DPUB``) of messages to ``nsqd`` over the TCP protocol.
 
     Example publishing a message repeatedly using a Tornado IOLoop periodic callback::
 
@@ -56,6 +56,7 @@ class Writer(Client):
 
                 self.nsq.pub(topic, msg) # pub
                 self.nsq.mpub(topic, [msg, msg_cn]) # mpub
+                self.nsq.dpub(topic, 60, msg) # dpub
 
                 # customize callback
                 callback = functools.partial(self.finish_pub, topic=topic, msg=msg)
@@ -108,19 +109,7 @@ class Writer(Client):
         self.connect()
 
     def pub(self, topic, msg, callback=None):
-        """
-        Publish a single message.
-
-        :param str topic: The topic to publish to.
-
-        :param msg: Message payload. If this is not bytes, it is assumed to
-            be a UTF-8 encoded string.
-
-        :type msg: str, unicode, or bytes
-
-        :param callable callback: Callback invoked on response or error.
-        """
-        self._pub('pub', topic, msg, callback)
+        self._pub('pub', topic, msg, callback=callback)
 
     def mpub(self, topic, msg, callback=None):
         """
@@ -140,9 +129,12 @@ class Writer(Client):
             msg = [msg]
         assert isinstance(msg, (list, set, tuple))
 
-        self._pub('mpub', topic, msg, callback)
+        self._pub('mpub', topic, msg, callback=callback)
 
-    def _pub(self, command, topic, msg, callback):
+    def dpub(self, topic, delay_ms, msg, callback=None):
+        self._pub('dpub', topic, msg, delay_ms, callback=callback)
+
+    def _pub(self, command, topic, msg, delay_ms=None, callback=None):
         if not callback:
             callback = functools.partial(self._finish_pub, command=command,
                                          topic=topic, msg=msg)
@@ -154,8 +146,14 @@ class Writer(Client):
         conn = random.choice(list(self.conns.values()))
         conn.callback_queue.append(callback)
         cmd = getattr(protocol, command)
+
+        if command == 'dpub':
+            args = (topic, delay_ms, msg)
+        else:
+            args = (topic, msg)
+
         try:
-            conn.send(cmd(topic, msg))
+            conn.send(cmd(*args))
         except Exception:
             logger.exception('[%s] failed to send %s' % (conn.id, command))
             conn.close()
