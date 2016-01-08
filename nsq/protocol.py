@@ -27,6 +27,7 @@ PUB = compat.b('PUB')  # publish
 RDY = compat.b('RDY')
 REQ = compat.b('REQ')  # requeue
 SUB = compat.b('SUB')
+TOUCH = compat.b('TOUCH')
 DPUB = compat.b('DPUB')  # deferred publish
 
 
